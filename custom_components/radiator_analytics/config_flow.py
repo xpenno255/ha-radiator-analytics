@@ -8,7 +8,7 @@ from typing import Any
 import voluptuous as vol
 from homeassistant.config_entries import ConfigEntry, ConfigFlow, OptionsFlow
 from homeassistant.core import callback
-from homeassistant.data_entry_flow import FlowResult
+from homeassistant.helpers import config_validation as cv
 
 from .const import (
     CONF_ANALYSIS_WINDOW,
@@ -47,8 +47,8 @@ class RadiatorAnalyticsConfigFlow(ConfigFlow, domain=DOMAIN):
         self._selected_zones: list[str] = []
 
     async def async_step_user(
-        self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
+        self, user_input: dict[str, Any] | None = None,
+    ) -> Any:
         """Handle the zone selection step."""
         await self.async_set_unique_id(DOMAIN)
         self._abort_if_unique_id_configured()
@@ -80,18 +80,15 @@ class RadiatorAnalyticsConfigFlow(ConfigFlow, domain=DOMAIN):
                     vol.Required(
                         CONF_MONITORED_ZONES,
                         default=list(self._zones.keys()),
-                    ): vol.All(
-                        vol.Coerce(list),
-                        [vol.In(zone_options)],
-                    ),
+                    ): cv.multi_select(zone_options),
                 }
             ),
             errors=errors,
         )
 
     async def async_step_settings(
-        self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
+        self, user_input: dict[str, Any] | None = None,
+    ) -> Any:
         """Handle the settings step."""
         if user_input is not None:
             return self.async_create_entry(
@@ -144,8 +141,8 @@ class RadiatorAnalyticsOptionsFlow(OptionsFlow):
         self._config_entry = config_entry
 
     async def async_step_init(
-        self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
+        self, user_input: dict[str, Any] | None = None,
+    ) -> Any:
         """Handle the options step."""
         if user_input is not None:
             return self.async_create_entry(title="", data=user_input)
@@ -171,10 +168,7 @@ class RadiatorAnalyticsOptionsFlow(OptionsFlow):
                     vol.Required(
                         CONF_MONITORED_ZONES,
                         default=current_zones,
-                    ): vol.All(
-                        vol.Coerce(list),
-                        [vol.In(zone_options)],
-                    ),
+                    ): cv.multi_select(zone_options),
                     vol.Required(
                         CONF_ANALYSIS_WINDOW,
                         default=current_window,
