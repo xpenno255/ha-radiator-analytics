@@ -8,7 +8,7 @@ from typing import Any
 import voluptuous as vol
 from homeassistant.config_entries import ConfigEntry, ConfigFlow, OptionsFlow
 from homeassistant.core import callback
-from homeassistant.helpers import config_validation as cv
+from homeassistant.helpers import config_validation as cv, entity_registry as er
 
 from .const import (
     CONF_ANALYSIS_WINDOW,
@@ -27,12 +27,20 @@ _LOGGER = logging.getLogger(__name__)
 
 
 def _find_ramses_zones(hass) -> dict[str, str]:
-    """Find all Ramses CC climate entities."""
+    """Find all Ramses CC climate entities using the entity registry."""
     zones = {}
-    for state in hass.states.async_all("climate"):
-        if "ramses" in state.entity_id:
-            friendly_name = state.attributes.get("friendly_name", state.entity_id)
-            zones[state.entity_id] = friendly_name
+    registry = er.async_get(hass)
+    for entry in registry.entities.values():
+        if entry.domain == "climate" and entry.platform == "ramses_cc":
+            # Skip the controller entity — it's not a zone
+            if "controller" in entry.entity_id:
+                continue
+            state = hass.states.get(entry.entity_id)
+            if state:
+                friendly_name = state.attributes.get("friendly_name", entry.entity_id)
+            else:
+                friendly_name = entry.name or entry.original_name or entry.entity_id
+            zones[entry.entity_id] = friendly_name
     return zones
 
 
