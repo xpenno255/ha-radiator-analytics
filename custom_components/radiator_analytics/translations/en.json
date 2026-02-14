@@ -1,0 +1,41 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Radiator Analytics",
+        "description": "Select the Ramses CC climate zones to monitor for heating performance analytics.",
+        "data": {
+          "monitored_zones": "Zones to monitor"
+        }
+      },
+      "settings": {
+        "title": "Analysis Settings",
+        "description": "Configure the analysis parameters.",
+        "data": {
+          "analysis_window_days": "Analysis window (days)",
+          "update_interval_minutes": "Update interval (minutes)"
+        }
+      }
+    },
+    "error": {
+      "no_zones_found": "No Ramses CC climate zones found. Ensure the Ramses CC integration is configured.",
+      "no_zones_selected": "Please select at least one zone to monitor."
+    },
+    "abort": {
+      "already_configured": "Radiator Analytics is already configured."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Radiator Analytics Options",
+        "description": "Update the monitored zones and analysis settings.",
+        "data": {
+          "monitored_zones": "Zones to monitor",
+          "analysis_window_days": "Analysis window (days)",
+          "update_interval_minutes": "Update interval (minutes)"
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "domain": "radiator_analytics",
+  "name": "Radiator Analytics",
+  "codeowners": ["@xpenno255"],
+  "config_flow": true,
+  "dependencies": ["recorder"],
+  "documentation": "https://github.com/xpenno255/ha-radiator-analytics",
+  "integration_type": "service",
+  "iot_class": "calculated",
+  "issue_tracker": "https://github.com/xpenno255/ha-radiator-analytics/issues",
+  "requirements": [],
+  "version": "0.1.0"
+}
