@@ -201,7 +201,8 @@ def _compute_system_stats(
 
     # Circuit order estimation
     # Primary signal: morning ramp rate (fastest = nearest boiler)
-    # Secondary signal: flow impact (higher = better position)
+    # Secondary signal: flow impact penalty only — zones that lose performance
+    # under concurrent demand are penalised (likely further from boiler)
     scored_zones: list[tuple[str, float]] = []
     for zone_id in monitored_zones:
         zs = zone_stats.get(zone_id)
@@ -213,13 +214,15 @@ def _compute_system_stats(
         if rate is None:
             continue
 
-        # Flow impact bonus: zones that maintain performance under load
-        # are likely in better circuit positions
-        fi_bonus = 0.0
-        if zs.flow_impact is not None:
-            fi_bonus = (zs.flow_impact - 1.0) * 0.5  # positive if gains under load
+        # Only penalise zones that lose flow under concurrent demand
+        # (flow_impact < 1.0 means zone heats slower when others are active)
+        # Never apply a bonus — high flow_impact can be misleading when
+        # the alone rate is very low (small denominator inflates the ratio)
+        fi_penalty = 0.0
+        if zs.flow_impact is not None and zs.flow_impact < 1.0:
+            fi_penalty = (1.0 - zs.flow_impact) * rate * 0.3
 
-        score = rate + fi_bonus
+        score = rate - fi_penalty
         scored_zones.append((zone_id, score))
 
     # Sort by score descending — highest score = nearest boiler = position 1
@@ -275,11 +278,15 @@ def _generate_recommendations(
                 f"({zs.heating_rate_avg} C/hr). Consider opening lockshield valve."
             )
 
-        # Excess flow: heats too fast
+        # Excess flow: heats too fast — only flag when the zone genuinely
+        # reaches setpoint reliably (>70%), otherwise the fast time is
+        # misleading (based on a small subset of lucky sessions)
         if (
             zs.time_to_setpoint_avg is not None
             and zs.time_to_setpoint_avg < 15
             and zs.total_sessions >= 3
+            and zs.setpoint_achievement is not None
+            and zs.setpoint_achievement > 70
         ):
             recs.append(
                 f"{name}: Reaches setpoint very quickly ({zs.time_to_setpoint_avg} min avg). "
@@ -293,15 +300,28 @@ def _generate_recommendations(
                 f"(flow impact {zs.flow_impact}). Likely at end of circuit."
             )
 
-        # Frequently fails to reach setpoint
+        # Frequently fails to reach setpoint — differentiate severity and
+        # require more sessions to avoid noisy early-data warnings
         if (
             zs.setpoint_achievement is not None
-            and zs.setpoint_achievement < 70
-            and zs.total_sessions >= 3
+            and zs.total_sessions >= 5
         ):
-            recs.append(
-                f"{name}: Only reaches target temperature {zs.setpoint_achievement}% of the time. "
-                f"May need lockshield adjustment or radiator sizing review."
-            )
+            if zs.setpoint_achievement < 30:
+                # Severely underperforming
+                detail = "Rarely reaches target"
+                if zs.duty_cycle and zs.duty_cycle > 60:
+                    advice = "Heating constantly but not reaching target — likely undersized radiator or insufficient flow."
+                else:
+                    advice = "May need lockshield opened further or radiator sizing review."
+                recs.append(
+                    f"{name}: {detail} ({zs.setpoint_achievement}% of sessions). {advice}"
+                )
+            elif zs.setpoint_achievement < 50:
+                # Moderately underperforming — only flag if heating hard
+                if zs.duty_cycle and zs.duty_cycle > 40:
+                    recs.append(
+                        f"{name}: Reaches target only {zs.setpoint_achievement}% of the time "
+                        f"despite {zs.duty_cycle}% duty cycle. Consider opening lockshield valve."
+                    )
 
     return recs
