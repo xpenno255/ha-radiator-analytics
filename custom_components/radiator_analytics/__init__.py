@@ -45,11 +45,23 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         if backfilled > 0:
             await store.async_save()
 
+    # Build zone name map from current HA states
+    zone_names: dict[str, str] = {}
+    for entity_id in monitored_zones:
+        state = hass.states.get(entity_id)
+        if state:
+            zone_names[entity_id] = state.attributes.get(
+                "friendly_name", entity_id
+            )
+        else:
+            zone_names[entity_id] = entity_id
+
     # Create coordinator
     coordinator = RadiatorAnalyticsCoordinator(
         hass,
         store,
         monitored_zones,
+        zone_names,
         analysis_window,
         update_interval,
     )

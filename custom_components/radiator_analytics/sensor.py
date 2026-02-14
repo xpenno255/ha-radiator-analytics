@@ -68,10 +68,10 @@ async def async_setup_entry(
     async_add_entities(entities)
 
 
-def _zone_name(zone_id: str) -> str:
-    """Extract a friendly zone name from the entity_id."""
-    # e.g. climate.ramses_cc_01_144444_00 -> Ramses Cc 01 144444 00
-    # We want the last part as the zone identifier
+def _zone_name(zone_id: str, zone_names: dict[str, str] | None = None) -> str:
+    """Get the friendly zone name, falling back to entity_id slug."""
+    if zone_names and zone_id in zone_names:
+        return zone_names[zone_id]
     parts = zone_id.split(".")[-1]
     return parts.replace("_", " ").title()
 
@@ -96,9 +96,14 @@ class _ZoneBaseSensor(CoordinatorEntity[RadiatorAnalyticsCoordinator], SensorEnt
         """Initialize the zone sensor."""
         super().__init__(coordinator)
         self._zone_id = zone_id
+        self._name_suffix = name_suffix
         self._attr_unique_id = f"{DOMAIN}_{_zone_slug(zone_id)}_{key}"
-        self._attr_name = f"{_zone_name(zone_id)} {name_suffix}"
         self._attr_device_info = DEVICE_INFO
+
+    @property
+    def name(self) -> str:
+        """Return the sensor name using the friendly zone name."""
+        return f"{_zone_name(self._zone_id, self.coordinator.zone_names)} {self._name_suffix}"
 
     def _get_zone_stats(self) -> ZoneStats | None:
         """Get the zone stats from coordinator data."""
@@ -312,15 +317,18 @@ class SystemCircuitOrderSensor(_SystemBaseSensor):
         order = self.coordinator.data.primary.system.circuit_order
         if not order:
             return None
-        return " -> ".join(_zone_name(z) for z in order)
+        names = self.coordinator.zone_names
+        return " -> ".join(_zone_name(z, names) for z in order)
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
         attrs: dict[str, Any] = {}
         if self.coordinator.data:
+            names = self.coordinator.zone_names
             order = self.coordinator.data.primary.system.circuit_order
             for i, zone_id in enumerate(order, start=1):
-                attrs[f"position_{i}"] = zone_id
+                attrs[f"position_{i}"] = _zone_name(zone_id, names)
+                attrs[f"position_{i}_entity"] = zone_id
                 zs = self.coordinator.data.primary.zone_stats.get(zone_id)
                 if zs:
                     attrs[f"position_{i}_rate"] = zs.heating_rate_avg
@@ -379,12 +387,13 @@ class SystemRecommendations24hSensor(_SystemBaseSensor):
                 attrs[f"recommendation_{i}"] = rec
             attrs["total_recommendations"] = len(recs)
             # Include 24h zone stats summary for quick reference
+            names = self.coordinator.zone_names
             for zone_id, zs in self.coordinator.data.short.zone_stats.items():
-                slug = _zone_slug(zone_id)
+                name = _zone_name(zone_id, names).lower().replace(" ", "_")
                 if zs.total_sessions > 0:
-                    attrs[f"{slug}_sessions"] = zs.total_sessions
-                    attrs[f"{slug}_heating_rate"] = zs.heating_rate_avg
-                    attrs[f"{slug}_duty_cycle"] = zs.duty_cycle
+                    attrs[f"{name}_sessions"] = zs.total_sessions
+                    attrs[f"{name}_heating_rate"] = zs.heating_rate_avg
+                    attrs[f"{name}_duty_cycle"] = zs.duty_cycle
         return attrs
 
 
@@ -407,7 +416,9 @@ class SystemBalanceScore24hSensor(_SystemBaseSensor):
     def extra_state_attributes(self) -> dict[str, Any]:
         attrs: dict[str, Any] = {"analysis_window": "24h"}
         if self.coordinator.data:
+            names = self.coordinator.zone_names
             for zone_id, zs in self.coordinator.data.short.zone_stats.items():
                 if zs.heating_rate_avg is not None:
-                    attrs[f"{_zone_slug(zone_id)}_rate"] = zs.heating_rate_avg
+                    name = _zone_name(zone_id, names).lower().replace(" ", "_")
+                    attrs[f"{name}_rate"] = zs.heating_rate_avg
         return attrs

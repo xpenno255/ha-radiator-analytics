@@ -35,6 +35,7 @@ class RadiatorAnalyticsCoordinator(DataUpdateCoordinator[CoordinatorData]):
         hass: HomeAssistant,
         store: RadiatorAnalyticsStore,
         monitored_zones: list[str],
+        zone_names: dict[str, str],
         analysis_window_days: int,
         update_interval_minutes: int,
     ) -> None:
@@ -47,6 +48,7 @@ class RadiatorAnalyticsCoordinator(DataUpdateCoordinator[CoordinatorData]):
         )
         self._store = store
         self._monitored_zones = monitored_zones
+        self._zone_names = zone_names
         self._analysis_window_days = analysis_window_days
 
     @property
@@ -54,8 +56,25 @@ class RadiatorAnalyticsCoordinator(DataUpdateCoordinator[CoordinatorData]):
         """Return the list of monitored zone entity IDs."""
         return self._monitored_zones
 
+    @property
+    def zone_names(self) -> dict[str, str]:
+        """Return the zone entity_id -> friendly name mapping."""
+        return self._zone_names
+
+    def _refresh_zone_names(self) -> None:
+        """Refresh zone names from current HA state (picks up late-loading entities)."""
+        for entity_id in self._monitored_zones:
+            state = self.hass.states.get(entity_id)
+            if state:
+                name = state.attributes.get("friendly_name")
+                if name:
+                    self._zone_names[entity_id] = name
+
     async def _async_update_data(self) -> CoordinatorData:
         """Run the analytics computation for both windows."""
+        # Refresh zone names in case entities loaded after our init
+        self._refresh_zone_names()
+
         # Get sessions for primary window
         sessions_primary = self._store.get_sessions_in_window(
             self._analysis_window_days
@@ -77,12 +96,14 @@ class RadiatorAnalyticsCoordinator(DataUpdateCoordinator[CoordinatorData]):
             sessions_primary,
             self._monitored_zones,
             self._analysis_window_days,
+            self._zone_names,
         )
         short = await self.hass.async_add_executor_job(
             compute_analytics,
             sessions_short,
             self._monitored_zones,
             SHORT_WINDOW_DAYS,
+            self._zone_names,
         )
 
         # Prune old sessions and save

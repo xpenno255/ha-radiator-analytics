@@ -56,11 +56,14 @@ def compute_analytics(
     sessions: list[dict[str, Any]],
     monitored_zones: list[str],
     analysis_window_days: int,
+    zone_names: dict[str, str] | None = None,
 ) -> AnalyticsResult:
     """Run the full analytics computation.
 
     This is the main entry point called by the coordinator.
     """
+    if zone_names is None:
+        zone_names = {}
     result = AnalyticsResult(
         analysis_window_days=analysis_window_days,
         last_updated=dt_util.utcnow().isoformat(),
@@ -84,7 +87,7 @@ def compute_analytics(
         result.zone_stats[zone_id] = _compute_zone_stats(zone_id, zone_sessions)
 
     # Compute system-level statistics
-    result.system = _compute_system_stats(result.zone_stats, monitored_zones)
+    result.system = _compute_system_stats(result.zone_stats, monitored_zones, zone_names)
 
     return result
 
@@ -191,6 +194,7 @@ def _compute_zone_stats(
 def _compute_system_stats(
     zone_stats: dict[str, ZoneStats],
     monitored_zones: list[str],
+    zone_names: dict[str, str] | None = None,
 ) -> SystemStats:
     """Compute system-level statistics from zone stats."""
     system = SystemStats()
@@ -242,20 +246,22 @@ def _compute_system_stats(
             system.balance_score = round(max(0, min(100, (1 - cv / 2) * 100)), 0)
 
     # Recommendations
-    system.recommendations = _generate_recommendations(zone_stats)
+    system.recommendations = _generate_recommendations(zone_stats, zone_names)
 
     return system
 
 
 def _generate_recommendations(
     zone_stats: dict[str, ZoneStats],
+    zone_names: dict[str, str] | None = None,
 ) -> list[str]:
     """Generate actionable recommendations based on zone performance."""
+    if zone_names is None:
+        zone_names = {}
     recs: list[str] = []
 
     for zone_id, zs in zone_stats.items():
-        # Extract friendly zone name from entity_id
-        name = zone_id.split(".")[-1].replace("_", " ").title()
+        name = zone_names.get(zone_id, zone_id.split(".")[-1].replace("_", " ").title())
 
         # Flow-starved zone: high duty cycle + low heating rate
         if (
