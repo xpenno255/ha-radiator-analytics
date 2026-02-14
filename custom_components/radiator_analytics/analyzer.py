@@ -258,10 +258,15 @@ def _generate_recommendations(
     zone_stats: dict[str, ZoneStats],
     zone_names: dict[str, str] | None = None,
 ) -> list[str]:
-    """Generate actionable recommendations based on zone performance."""
+    """Generate actionable recommendations based on zone performance.
+
+    Recommendations are prioritised by severity (highest first):
+    1 = critical, 2 = warning, 3 = suggestion
+    """
     if zone_names is None:
         zone_names = {}
-    recs: list[str] = []
+    # Collect (priority, recommendation_text) tuples
+    scored: list[tuple[int, str]] = []
 
     for zone_id, zs in zone_stats.items():
         name = zone_names.get(zone_id, zone_id.split(".")[-1].replace("_", " ").title())
@@ -273,10 +278,11 @@ def _generate_recommendations(
             and zs.heating_rate_avg is not None
             and zs.heating_rate_avg < 1.0
         ):
-            recs.append(
+            scored.append((
+                1,
                 f"{name}: High duty cycle ({zs.duty_cycle}%) with low heating rate "
-                f"({zs.heating_rate_avg} C/hr). Consider opening lockshield valve."
-            )
+                f"({zs.heating_rate_avg} C/hr). Consider opening lockshield valve.",
+            ))
 
         # Excess flow: heats too fast — only flag when the zone genuinely
         # reaches setpoint reliably (>70%), otherwise the fast time is
@@ -288,17 +294,19 @@ def _generate_recommendations(
             and zs.setpoint_achievement is not None
             and zs.setpoint_achievement > 70
         ):
-            recs.append(
+            scored.append((
+                3,
                 f"{name}: Reaches setpoint very quickly ({zs.time_to_setpoint_avg} min avg). "
-                f"Consider restricting lockshield valve to improve system balance."
-            )
+                f"Consider restricting lockshield valve to improve system balance.",
+            ))
 
         # Severe flow loss under concurrent demand
         if zs.flow_impact is not None and zs.flow_impact < 0.5:
-            recs.append(
+            scored.append((
+                2,
                 f"{name}: Loses significant flow under concurrent demand "
-                f"(flow impact {zs.flow_impact}). Likely at end of circuit."
-            )
+                f"(flow impact {zs.flow_impact}). Likely at end of circuit.",
+            ))
 
         # Frequently fails to reach setpoint — differentiate severity and
         # require more sessions to avoid noisy early-data warnings
@@ -313,15 +321,19 @@ def _generate_recommendations(
                     advice = "Heating constantly but not reaching target — likely undersized radiator or insufficient flow."
                 else:
                     advice = "May need lockshield opened further or radiator sizing review."
-                recs.append(
-                    f"{name}: {detail} ({zs.setpoint_achievement}% of sessions). {advice}"
-                )
+                scored.append((
+                    1,
+                    f"{name}: {detail} ({zs.setpoint_achievement}% of sessions). {advice}",
+                ))
             elif zs.setpoint_achievement < 50:
                 # Moderately underperforming — only flag if heating hard
                 if zs.duty_cycle and zs.duty_cycle > 40:
-                    recs.append(
+                    scored.append((
+                        2,
                         f"{name}: Reaches target only {zs.setpoint_achievement}% of the time "
-                        f"despite {zs.duty_cycle}% duty cycle. Consider opening lockshield valve."
-                    )
+                        f"despite {zs.duty_cycle}% duty cycle. Consider opening lockshield valve.",
+                    ))
 
-    return recs
+    # Sort by priority (1=critical first) then alphabetically by text
+    scored.sort(key=lambda x: (x[0], x[1]))
+    return [text for _, text in scored]

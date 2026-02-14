@@ -36,11 +36,18 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     store = RadiatorAnalyticsStore(hass)
     await store.async_load()
 
-    # Backfill from recorder if store is empty
-    if store.is_empty:
-        _LOGGER.info("No existing session data — running historical backfill")
+    # Backfill from recorder for any zones that have no session data
+    zones_with_data = {s.get("zone_id") for s in store.sessions}
+    zones_needing_backfill = [z for z in monitored_zones if z not in zones_with_data]
+
+    if zones_needing_backfill:
+        _LOGGER.info(
+            "Backfilling %d zones with no session data: %s",
+            len(zones_needing_backfill),
+            zones_needing_backfill,
+        )
         backfilled = await async_backfill_from_recorder(
-            hass, store, monitored_zones, analysis_window
+            hass, store, zones_needing_backfill, analysis_window
         )
         if backfilled > 0:
             await store.async_save()
