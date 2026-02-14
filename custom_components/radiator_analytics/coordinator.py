@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass, field
 from datetime import timedelta
 from typing import Any
 
@@ -15,8 +16,18 @@ from .store import RadiatorAnalyticsStore
 
 _LOGGER = logging.getLogger(__name__)
 
+SHORT_WINDOW_DAYS = 1
 
-class RadiatorAnalyticsCoordinator(DataUpdateCoordinator[AnalyticsResult]):
+
+@dataclass
+class CoordinatorData:
+    """Container for both long and short window analytics."""
+
+    primary: AnalyticsResult
+    short: AnalyticsResult
+
+
+class RadiatorAnalyticsCoordinator(DataUpdateCoordinator[CoordinatorData]):
     """Coordinator that runs the analytics engine on a schedule."""
 
     def __init__(
@@ -43,28 +54,39 @@ class RadiatorAnalyticsCoordinator(DataUpdateCoordinator[AnalyticsResult]):
         """Return the list of monitored zone entity IDs."""
         return self._monitored_zones
 
-    async def _async_update_data(self) -> AnalyticsResult:
-        """Run the analytics computation."""
-        # Get sessions within the analysis window
-        sessions = self._store.get_sessions_in_window(self._analysis_window_days)
+    async def _async_update_data(self) -> CoordinatorData:
+        """Run the analytics computation for both windows."""
+        # Get sessions for primary window
+        sessions_primary = self._store.get_sessions_in_window(
+            self._analysis_window_days
+        )
+        # Get sessions for 24h window
+        sessions_short = self._store.get_sessions_in_window(SHORT_WINDOW_DAYS)
 
         _LOGGER.debug(
-            "Running analytics on %d sessions across %d zones (window: %d days)",
-            len(sessions),
-            len(self._monitored_zones),
+            "Running analytics: %d sessions (%d-day), %d sessions (24h) across %d zones",
+            len(sessions_primary),
             self._analysis_window_days,
+            len(sessions_short),
+            len(self._monitored_zones),
         )
 
-        # Run compute in executor since it can be CPU-intensive with many sessions
-        result = await self.hass.async_add_executor_job(
+        # Run both computations
+        primary = await self.hass.async_add_executor_job(
             compute_analytics,
-            sessions,
+            sessions_primary,
             self._monitored_zones,
             self._analysis_window_days,
+        )
+        short = await self.hass.async_add_executor_job(
+            compute_analytics,
+            sessions_short,
+            self._monitored_zones,
+            SHORT_WINDOW_DAYS,
         )
 
         # Prune old sessions and save
         self._store.prune(self._analysis_window_days * 2)
         await self._store.async_save()
 
-        return result
+        return CoordinatorData(primary=primary, short=short)

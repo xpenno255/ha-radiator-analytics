@@ -20,7 +20,7 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .analyzer import AnalyticsResult, ZoneStats
 from .const import DOMAIN
-from .coordinator import RadiatorAnalyticsCoordinator
+from .coordinator import CoordinatorData, RadiatorAnalyticsCoordinator
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -61,6 +61,8 @@ async def async_setup_entry(
         SystemBalanceScoreSensor(coordinator),
         SystemCircuitOrderSensor(coordinator),
         SystemRecommendationsSensor(coordinator),
+        SystemRecommendations24hSensor(coordinator),
+        SystemBalanceScore24hSensor(coordinator),
     ])
 
     async_add_entities(entities)
@@ -102,14 +104,14 @@ class _ZoneBaseSensor(CoordinatorEntity[RadiatorAnalyticsCoordinator], SensorEnt
         """Get the zone stats from coordinator data."""
         if self.coordinator.data is None:
             return None
-        return self.coordinator.data.zone_stats.get(self._zone_id)
+        return self.coordinator.data.primary.zone_stats.get(self._zone_id)
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
         """Return common attributes."""
         attrs: dict[str, Any] = {"source_entity": self._zone_id}
         if self.coordinator.data:
-            attrs["analysis_window_days"] = self.coordinator.data.analysis_window_days
+            attrs["analysis_window_days"] = self.coordinator.data.primary.analysis_window_days
         zs = self._get_zone_stats()
         if zs:
             attrs["total_sessions"] = zs.total_sessions
@@ -231,7 +233,7 @@ class ZoneCircuitPositionSensor(_ZoneBaseSensor):
     def extra_state_attributes(self) -> dict[str, Any]:
         attrs = super().extra_state_attributes
         if self.coordinator.data:
-            attrs["circuit_order"] = self.coordinator.data.system.circuit_order
+            attrs["circuit_order"] = self.coordinator.data.primary.system.circuit_order
         return attrs
 
 
@@ -292,7 +294,7 @@ class SystemBalanceScoreSensor(_SystemBaseSensor):
     def native_value(self) -> float | None:
         if self.coordinator.data is None:
             return None
-        return self.coordinator.data.system.balance_score
+        return self.coordinator.data.primary.system.balance_score
 
 
 class SystemCircuitOrderSensor(_SystemBaseSensor):
@@ -307,19 +309,19 @@ class SystemCircuitOrderSensor(_SystemBaseSensor):
     def native_value(self) -> str | None:
         if self.coordinator.data is None:
             return None
-        order = self.coordinator.data.system.circuit_order
+        order = self.coordinator.data.primary.system.circuit_order
         if not order:
             return None
-        return " → ".join(_zone_name(z) for z in order)
+        return " -> ".join(_zone_name(z) for z in order)
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
         attrs: dict[str, Any] = {}
         if self.coordinator.data:
-            order = self.coordinator.data.system.circuit_order
+            order = self.coordinator.data.primary.system.circuit_order
             for i, zone_id in enumerate(order, start=1):
                 attrs[f"position_{i}"] = zone_id
-                zs = self.coordinator.data.zone_stats.get(zone_id)
+                zs = self.coordinator.data.primary.zone_stats.get(zone_id)
                 if zs:
                     attrs[f"position_{i}_rate"] = zs.heating_rate_avg
             attrs["total_zones"] = len(order)
@@ -338,14 +340,74 @@ class SystemRecommendationsSensor(_SystemBaseSensor):
     def native_value(self) -> int | None:
         if self.coordinator.data is None:
             return None
-        return len(self.coordinator.data.system.recommendations)
+        return len(self.coordinator.data.primary.system.recommendations)
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
         attrs: dict[str, Any] = {}
         if self.coordinator.data:
-            recs = self.coordinator.data.system.recommendations
+            recs = self.coordinator.data.primary.system.recommendations
             for i, rec in enumerate(recs, start=1):
                 attrs[f"recommendation_{i}"] = rec
             attrs["total_recommendations"] = len(recs)
+        return attrs
+
+
+# --- 24-hour sensors ---
+
+
+class SystemRecommendations24hSensor(_SystemBaseSensor):
+    """Recommendations based on last 24 hours of data."""
+
+    _attr_icon = "mdi:lightbulb-alert-outline"
+
+    def __init__(self, coordinator: RadiatorAnalyticsCoordinator) -> None:
+        super().__init__(coordinator, "recommendations_24h", "Recommendations (24h)")
+
+    @property
+    def native_value(self) -> int | None:
+        if self.coordinator.data is None:
+            return None
+        return len(self.coordinator.data.short.system.recommendations)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        attrs: dict[str, Any] = {"analysis_window": "24h"}
+        if self.coordinator.data:
+            recs = self.coordinator.data.short.system.recommendations
+            for i, rec in enumerate(recs, start=1):
+                attrs[f"recommendation_{i}"] = rec
+            attrs["total_recommendations"] = len(recs)
+            # Include 24h zone stats summary for quick reference
+            for zone_id, zs in self.coordinator.data.short.zone_stats.items():
+                slug = _zone_slug(zone_id)
+                if zs.total_sessions > 0:
+                    attrs[f"{slug}_sessions"] = zs.total_sessions
+                    attrs[f"{slug}_heating_rate"] = zs.heating_rate_avg
+                    attrs[f"{slug}_duty_cycle"] = zs.duty_cycle
+        return attrs
+
+
+class SystemBalanceScore24hSensor(_SystemBaseSensor):
+    """System balance score based on last 24 hours."""
+
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_icon = "mdi:scale-balance"
+
+    def __init__(self, coordinator: RadiatorAnalyticsCoordinator) -> None:
+        super().__init__(coordinator, "balance_score_24h", "System Balance Score (24h)")
+
+    @property
+    def native_value(self) -> float | None:
+        if self.coordinator.data is None:
+            return None
+        return self.coordinator.data.short.system.balance_score
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        attrs: dict[str, Any] = {"analysis_window": "24h"}
+        if self.coordinator.data:
+            for zone_id, zs in self.coordinator.data.short.zone_stats.items():
+                if zs.heating_rate_avg is not None:
+                    attrs[f"{_zone_slug(zone_id)}_rate"] = zs.heating_rate_avg
         return attrs
