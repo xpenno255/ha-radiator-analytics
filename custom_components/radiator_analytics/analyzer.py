@@ -168,14 +168,17 @@ def _compute_zone_stats(
         )
 
     # Rate alone (0 concurrent zones) vs rate under concurrent demand (2+)
+    # Exclude backfilled sessions — they always have concurrent_count=0
+    # which would incorrectly inflate rates_alone
+    live_sessions = [s for s in sessions if not s.get("backfilled")]
     rates_alone = [
         s["rate_per_hour"]
-        for s in sessions
+        for s in live_sessions
         if s.get("concurrent_count", 0) == 0 and s.get("rate_per_hour") is not None
     ]
     rates_concurrent = [
         s["rate_per_hour"]
-        for s in sessions
+        for s in live_sessions
         if s.get("concurrent_count", 0) >= 2 and s.get("rate_per_hour") is not None
     ]
 

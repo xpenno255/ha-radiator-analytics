@@ -30,6 +30,7 @@ class HeatingSessionTracker:
         self._store = store
         self._monitored_zones = monitored_zones
         self._active_sessions: dict[str, dict[str, Any]] = {}
+        self._seen_concurrent: dict[str, set[str]] = {}
         self._unsub: list = []
 
     @property
@@ -86,6 +87,10 @@ class HeatingSessionTracker:
 
         if old_action != "heating" and new_action == "heating":
             self._start_session(entity_id, new_state.attributes)
+            # Add this zone to the seen_concurrent set of all other active sessions
+            for other_id in self._active_sessions:
+                if other_id != entity_id:
+                    self._seen_concurrent.setdefault(other_id, set()).add(entity_id)
         elif old_action == "heating" and new_action != "heating":
             self._end_session(entity_id, new_state.attributes)
 
@@ -95,12 +100,17 @@ class HeatingSessionTracker:
             "zone_id": entity_id,
             "start_time": dt_util.utcnow().isoformat(),
             "start_temp": attrs.get("current_temperature"),
-            "setpoint": attrs.get("temperature"),
+            "setpoint_start": attrs.get("temperature"),
+        }
+        # Initialise seen_concurrent with zones already heating
+        self._seen_concurrent[entity_id] = {
+            z for z in self._active_sessions if z != entity_id
         }
 
     def _end_session(self, entity_id: str, attrs: dict) -> None:
         """End a heating session and store it."""
         session_data = self._active_sessions.pop(entity_id, None)
+        concurrent_set = self._seen_concurrent.pop(entity_id, set())
         if not session_data:
             return
 
@@ -125,10 +135,20 @@ class HeatingSessionTracker:
         temp_rise = float(end_temp) - float(start_temp)
         rate_per_hour = temp_rise / duration_hours if duration_hours > 0 else 0
 
-        # Determine which other zones were also heating during this session
-        concurrent_zones = [
-            z for z in self._active_sessions.keys() if z != entity_id
-        ]
+        # Read the live setpoint at session end (OT automation may have changed it)
+        state = self._hass.states.get(entity_id)
+        setpoint_end = (
+            state.attributes.get("temperature") if state else None
+        )
+        setpoint_start = session_data.get("setpoint_start")
+
+        # Use end setpoint for reached_setpoint (what evohome was targeting when heating stopped)
+        # Fall back to start setpoint if end isn't available
+        setpoint = setpoint_end if setpoint_end is not None else setpoint_start
+
+        # Concurrent zones: accumulated set of all zones that were heating
+        # at any point during this session
+        concurrent_zones = sorted(concurrent_set)
 
         completed_session = {
             "zone_id": entity_id,
@@ -136,24 +156,29 @@ class HeatingSessionTracker:
             "end_time": now.isoformat(),
             "start_temp": float(start_temp),
             "end_temp": float(end_temp),
-            "setpoint": float(session_data["setpoint"]) if session_data.get("setpoint") else None,
+            "setpoint_start": float(setpoint_start) if setpoint_start is not None else None,
+            "setpoint_end": float(setpoint_end) if setpoint_end is not None else None,
+            "setpoint": float(setpoint) if setpoint is not None else None,
             "temp_rise": round(temp_rise, 2),
             "duration_minutes": round(duration_minutes, 1),
             "rate_per_hour": round(rate_per_hour, 2),
             "concurrent_zones": concurrent_zones,
             "concurrent_count": len(concurrent_zones),
             "reached_setpoint": (
-                float(end_temp) >= float(session_data["setpoint"])
-                if session_data.get("setpoint")
+                float(end_temp) >= float(setpoint)
+                if setpoint is not None
                 else None
             ),
         }
 
         self._store.add_session(completed_session)
         _LOGGER.debug(
-            "Session completed: %s, %.1f min, %+.2f C/hr, %d concurrent",
+            "Session completed: %s, %.1f min, %+.2f C/hr, %d concurrent, "
+            "setpoint %s->%s",
             entity_id,
             duration_minutes,
             rate_per_hour,
             len(concurrent_zones),
+            setpoint_start,
+            setpoint_end,
         )
