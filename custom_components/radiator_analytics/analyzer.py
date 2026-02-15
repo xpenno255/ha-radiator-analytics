@@ -337,3 +337,211 @@ def _generate_recommendations(
     # Sort by priority (1=critical first) then alphabetically by text
     scored.sort(key=lambda x: (x[0], x[1]))
     return [text for _, text in scored]
+
+
+# --- Daily comparison (24h vs previous 24h) ---
+
+
+@dataclass
+class ZoneComparison:
+    """Change metrics for a single zone between two 24h windows."""
+
+    zone_id: str
+    heating_rate_delta: float | None = None
+    duty_cycle_delta: float | None = None
+    setpoint_achievement_delta: float | None = None
+    time_to_setpoint_delta: float | None = None
+    sessions_current: int = 0
+    sessions_previous: int = 0
+    improved: bool | None = None
+
+
+@dataclass
+class ComparisonResult:
+    """Result of comparing two 24h analysis windows."""
+
+    zone_comparisons: dict[str, ZoneComparison] = field(default_factory=dict)
+    balance_score_delta: float | None = None
+    summary: str = ""
+    recommendations: list[str] = field(default_factory=list)
+    last_updated: str = ""
+
+
+def _delta(current: float | None, previous: float | None) -> float | None:
+    """Compute rounded delta between two values."""
+    if current is None or previous is None:
+        return None
+    return round(current - previous, 2)
+
+
+def _fmt_delta(val: float | None) -> str:
+    """Format a delta value with +/- prefix."""
+    if val is None:
+        return "N/A"
+    sign = "+" if val >= 0 else ""
+    return f"{sign}{val}"
+
+
+def compare_windows(
+    current: AnalyticsResult,
+    previous: AnalyticsResult,
+    zone_names: dict[str, str] | None = None,
+) -> ComparisonResult:
+    """Compare two analysis windows and produce a change report."""
+    if zone_names is None:
+        zone_names = {}
+
+    result = ComparisonResult(last_updated=dt_util.utcnow().isoformat())
+
+    improved_count = 0
+    regressed_count = 0
+    unchanged_count = 0
+
+    all_zones = set(current.zone_stats.keys()) | set(previous.zone_stats.keys())
+
+    for zone_id in all_zones:
+        cur = current.zone_stats.get(zone_id)
+        prev = previous.zone_stats.get(zone_id)
+        if not cur or not prev:
+            continue
+
+        comp = ZoneComparison(
+            zone_id=zone_id,
+            heating_rate_delta=_delta(cur.heating_rate_avg, prev.heating_rate_avg),
+            duty_cycle_delta=_delta(cur.duty_cycle, prev.duty_cycle),
+            setpoint_achievement_delta=_delta(
+                cur.setpoint_achievement, prev.setpoint_achievement
+            ),
+            time_to_setpoint_delta=_delta(
+                cur.time_to_setpoint_avg, prev.time_to_setpoint_avg
+            ),
+            sessions_current=cur.total_sessions,
+            sessions_previous=prev.total_sessions,
+        )
+
+        # Determine overall direction — improvement means heating rate up
+        # or setpoint achievement up (or both)
+        signals: list[bool] = []
+        if comp.heating_rate_delta is not None and abs(comp.heating_rate_delta) > 0.05:
+            signals.append(comp.heating_rate_delta > 0)
+        if (
+            comp.setpoint_achievement_delta is not None
+            and abs(comp.setpoint_achievement_delta) > 2.0
+        ):
+            signals.append(comp.setpoint_achievement_delta > 0)
+
+        if signals:
+            comp.improved = all(signals)
+            if comp.improved:
+                improved_count += 1
+            else:
+                regressed_count += 1
+        else:
+            unchanged_count += 1
+
+        result.zone_comparisons[zone_id] = comp
+
+    # Balance score delta
+    result.balance_score_delta = _delta(
+        current.system.balance_score, previous.system.balance_score
+    )
+
+    # Summary
+    parts = []
+    if improved_count:
+        parts.append(f"{improved_count} improved")
+    if regressed_count:
+        parts.append(f"{regressed_count} regressed")
+    if unchanged_count:
+        parts.append(f"{unchanged_count} unchanged")
+    result.summary = ", ".join(parts) if parts else "No data"
+
+    # Comparison-specific recommendations
+    result.recommendations = _generate_comparison_recommendations(
+        result.zone_comparisons, zone_names
+    )
+
+    return result
+
+
+def _generate_comparison_recommendations(
+    comparisons: dict[str, ZoneComparison],
+    zone_names: dict[str, str],
+) -> list[str]:
+    """Generate recommendations based on changes between two 24h windows."""
+    scored: list[tuple[int, str]] = []
+
+    for zone_id, comp in comparisons.items():
+        name = zone_names.get(
+            zone_id, zone_id.split(".")[-1].replace("_", " ").title()
+        )
+
+        # Skip zones with very little data in either window
+        if comp.sessions_current < 2 and comp.sessions_previous < 2:
+            continue
+
+        rate_d = comp.heating_rate_delta
+        ach_d = comp.setpoint_achievement_delta
+        duty_d = comp.duty_cycle_delta
+
+        # Significant heating rate improvement
+        if rate_d is not None and rate_d > 0.1:
+            detail = f"Heating rate improved {_fmt_delta(rate_d)} C/hr"
+            if ach_d is not None and ach_d > 5:
+                detail += f", setpoint achievement up {_fmt_delta(ach_d)}%"
+            scored.append((3, f"{name}: {detail}. Adjustment helping."))
+
+        # Significant heating rate regression
+        elif rate_d is not None and rate_d < -0.1:
+            detail = f"Heating rate dropped {_fmt_delta(rate_d)} C/hr"
+            if ach_d is not None and ach_d < -5:
+                detail += f", setpoint achievement down {_fmt_delta(ach_d)}%"
+                scored.append((
+                    1,
+                    f"{name}: {detail}. Lockshield may be too restricted "
+                    f"— consider opening slightly.",
+                ))
+            else:
+                scored.append((2, f"{name}: {detail}. Monitor over next 24h."))
+
+        # Setpoint achievement changed significantly (even if rate didn't)
+        elif ach_d is not None and abs(ach_d) > 10:
+            if ach_d > 0:
+                scored.append((
+                    3,
+                    f"{name}: Setpoint achievement improved "
+                    f"{_fmt_delta(ach_d)}%. Reaching target more often.",
+                ))
+            else:
+                scored.append((
+                    1,
+                    f"{name}: Setpoint achievement dropped "
+                    f"{_fmt_delta(ach_d)}%. May need lockshield adjustment.",
+                ))
+
+        # Duty cycle changed significantly with no rate improvement
+        elif duty_d is not None and abs(duty_d) > 10:
+            if duty_d < 0 and (rate_d is None or abs(rate_d or 0) < 0.05):
+                scored.append((
+                    3,
+                    f"{name}: Duty cycle reduced {_fmt_delta(duty_d)}% with "
+                    f"stable heating rate. More efficient.",
+                ))
+            elif duty_d > 0 and (rate_d is None or (rate_d or 0) < 0.05):
+                scored.append((
+                    2,
+                    f"{name}: Duty cycle increased {_fmt_delta(duty_d)}% without "
+                    f"rate improvement. Working harder for same result.",
+                ))
+
+        # Zone with enough data but no significant change
+        elif comp.sessions_current >= 3 and comp.sessions_previous >= 3:
+            if comp.improved is None:
+                scored.append((
+                    3,
+                    f"{name}: No significant change. "
+                    f"May need further adjustment.",
+                ))
+
+    scored.sort(key=lambda x: (x[0], x[1]))
+    return [text for _, text in scored]

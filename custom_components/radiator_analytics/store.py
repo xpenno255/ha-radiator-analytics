@@ -89,3 +89,18 @@ class RadiatorAnalyticsStore:
         cutoff = dt_util.utcnow() - timedelta(days=days)
         cutoff_str = cutoff.isoformat()
         return [s for s in self._sessions if s.get("start_time", "") > cutoff_str]
+
+    def get_sessions_in_range(
+        self, start_days_ago: int, end_days_ago: int
+    ) -> list[dict[str, Any]]:
+        """Return sessions between start_days_ago and end_days_ago.
+
+        E.g. get_sessions_in_range(2, 1) returns sessions from 48h-24h ago.
+        """
+        now = dt_util.utcnow()
+        range_start = (now - timedelta(days=start_days_ago)).isoformat()
+        range_end = (now - timedelta(days=end_days_ago)).isoformat()
+        return [
+            s for s in self._sessions
+            if range_start < s.get("start_time", "") <= range_end
+        ]

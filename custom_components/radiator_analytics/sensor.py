@@ -18,7 +18,7 @@ from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .analyzer import AnalyticsResult, ZoneStats
+from .analyzer import AnalyticsResult, ZoneComparison, ZoneStats
 from .const import DOMAIN
 from .coordinator import CoordinatorData, RadiatorAnalyticsCoordinator
 
@@ -61,8 +61,8 @@ async def async_setup_entry(
         SystemBalanceScoreSensor(coordinator),
         SystemCircuitOrderSensor(coordinator),
         SystemRecommendationsSensor(coordinator),
-        SystemRecommendations24hSensor(coordinator),
-        SystemBalanceScore24hSensor(coordinator),
+        DailyReportSensor(coordinator),
+        BalanceTrendSensor(coordinator),
     ])
 
     async_add_entities(entities)
@@ -361,64 +361,93 @@ class SystemRecommendationsSensor(_SystemBaseSensor):
         return attrs
 
 
-# --- 24-hour sensors ---
+# --- Daily comparison sensors ---
 
 
-class SystemRecommendations24hSensor(_SystemBaseSensor):
-    """Recommendations based on last 24 hours of data."""
+class DailyReportSensor(_SystemBaseSensor):
+    """Daily comparison report: last 24h vs previous 24h."""
 
-    _attr_icon = "mdi:lightbulb-alert-outline"
+    _attr_icon = "mdi:chart-timeline-variant-shimmer"
 
     def __init__(self, coordinator: RadiatorAnalyticsCoordinator) -> None:
-        super().__init__(coordinator, "recommendations_24h", "Recommendations (24h)")
+        super().__init__(coordinator, "daily_report", "Daily Report")
 
     @property
     def native_value(self) -> int | None:
         if self.coordinator.data is None:
             return None
-        return len(self.coordinator.data.short.system.recommendations)
+        comp = self.coordinator.data.comparison
+        if comp is None:
+            return 0
+        return len(comp.recommendations)
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
-        attrs: dict[str, Any] = {"analysis_window": "24h"}
-        if self.coordinator.data:
-            recs = self.coordinator.data.short.system.recommendations
-            for i, rec in enumerate(recs, start=1):
-                attrs[f"recommendation_{i}"] = rec
-            attrs["total_recommendations"] = len(recs)
-            # Include 24h zone stats summary for quick reference
-            names = self.coordinator.zone_names
-            for zone_id, zs in self.coordinator.data.short.zone_stats.items():
-                name = _zone_name(zone_id, names).lower().replace(" ", "_")
-                if zs.total_sessions > 0:
-                    attrs[f"{name}_sessions"] = zs.total_sessions
-                    attrs[f"{name}_heating_rate"] = zs.heating_rate_avg
-                    attrs[f"{name}_duty_cycle"] = zs.duty_cycle
+        attrs: dict[str, Any] = {
+            "comparison_window": "last 24h vs previous 24h",
+        }
+        if self.coordinator.data is None:
+            return attrs
+
+        comp = self.coordinator.data.comparison
+        if comp is None:
+            attrs["status"] = "awaiting first comparison"
+            return attrs
+
+        attrs["summary"] = comp.summary
+        attrs["last_compared"] = comp.last_updated
+        attrs["total_recommendations"] = len(comp.recommendations)
+
+        for i, rec in enumerate(comp.recommendations, start=1):
+            attrs[f"recommendation_{i}"] = rec
+
+        # Per-zone deltas
+        names = self.coordinator.zone_names
+        for zone_id, zc in comp.zone_comparisons.items():
+            name = _zone_name(zone_id, names).lower().replace(" ", "_")
+            if zc.heating_rate_delta is not None:
+                attrs[f"{name}_rate_change"] = zc.heating_rate_delta
+            if zc.duty_cycle_delta is not None:
+                attrs[f"{name}_duty_cycle_change"] = zc.duty_cycle_delta
+            if zc.setpoint_achievement_delta is not None:
+                attrs[f"{name}_achievement_change"] = zc.setpoint_achievement_delta
+            if zc.sessions_current > 0 or zc.sessions_previous > 0:
+                attrs[f"{name}_sessions"] = (
+                    f"{zc.sessions_previous} -> {zc.sessions_current}"
+                )
+
         return attrs
 
 
-class SystemBalanceScore24hSensor(_SystemBaseSensor):
-    """System balance score based on last 24 hours."""
+class BalanceTrendSensor(_SystemBaseSensor):
+    """Balance score trend: change from previous 24h period."""
 
     _attr_state_class = SensorStateClass.MEASUREMENT
-    _attr_icon = "mdi:scale-balance"
+    _attr_icon = "mdi:trending-up"
 
     def __init__(self, coordinator: RadiatorAnalyticsCoordinator) -> None:
-        super().__init__(coordinator, "balance_score_24h", "System Balance Score (24h)")
+        super().__init__(coordinator, "balance_trend", "Balance Trend")
 
     @property
     def native_value(self) -> float | None:
         if self.coordinator.data is None:
             return None
-        return self.coordinator.data.short.system.balance_score
+        comp = self.coordinator.data.comparison
+        if comp is None:
+            return None
+        return comp.balance_score_delta
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
-        attrs: dict[str, Any] = {"analysis_window": "24h"}
+        attrs: dict[str, Any] = {}
         if self.coordinator.data:
-            names = self.coordinator.zone_names
-            for zone_id, zs in self.coordinator.data.short.zone_stats.items():
-                if zs.heating_rate_avg is not None:
-                    name = _zone_name(zone_id, names).lower().replace(" ", "_")
-                    attrs[f"{name}_rate"] = zs.heating_rate_avg
+            short_score = self.coordinator.data.short.system.balance_score
+            prev_score = self.coordinator.data.previous.system.balance_score
+            if short_score is not None:
+                attrs["current_24h_score"] = short_score
+            if prev_score is not None:
+                attrs["previous_24h_score"] = prev_score
+            comp = self.coordinator.data.comparison
+            if comp:
+                attrs["last_compared"] = comp.last_updated
         return attrs

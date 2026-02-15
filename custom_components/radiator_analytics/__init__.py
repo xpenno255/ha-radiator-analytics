@@ -76,6 +76,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # Run first refresh
     await coordinator.async_config_entry_first_refresh()
 
+    # Run initial comparison so the daily report sensor is populated immediately
+    await coordinator._run_comparison()
+
+    # Schedule midnight daily comparison
+    coordinator.start_midnight_schedule()
+
     # Start session tracker
     tracker = HeatingSessionTracker(hass, store, monitored_zones)
     tracker.start()
@@ -108,6 +114,9 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     if unload_ok:
         data = hass.data[DOMAIN].pop(entry.entry_id, {})
+        coordinator = data.get("coordinator")
+        if coordinator:
+            coordinator.stop_midnight_schedule()
         tracker = data.get("tracker")
         if tracker:
             tracker.stop()
